@@ -131,6 +131,12 @@ class SessionManager():
         if service == Service.VOLVO_CONNECTED_VEHICLE:
             session = VolvoSession(vcc_api_key_primary=session_token.vcc_api_key_primary, vcc_api_key_secondary=session_token.vcc_api_key_secondary,
                                    access_token=session_token.access_token, cache=cache)
+        elif service == Service.VOLVO_ENERGY:
+            session = VolvoSession(vcc_api_key_primary=session_token.vcc_api_key_primary, vcc_api_key_secondary=session_token.vcc_api_key_secondary,
+                                   access_token=session_token.access_token, cache=cache)
+        elif service == Service.VOLVO_LOCATION:
+            session = VolvoSession(vcc_api_key_primary=session_token.vcc_api_key_primary, vcc_api_key_secondary=session_token.vcc_api_key_secondary,
+                                   access_token=session_token.access_token, cache=cache)
         else:
             raise ValueError(f"Unsupported service: {service}")
 

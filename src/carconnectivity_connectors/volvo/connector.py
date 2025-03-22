@@ -40,7 +40,7 @@ from carconnectivity_connectors.base.connector import BaseConnector
 from carconnectivity_connectors.volvo.auth.session_manager import SessionManager, SessionToken, Service
 from carconnectivity_connectors.volvo.auth.volvo_session import VolvoSession
 
-from carconnectivity_connectors.volvo.vehicle import VolvoVehicle
+from carconnectivity_connectors.volvo.vehicle import VolvoVehicle, VolvoElectricVehicle, VolvoCombustionVehicle, VolvoHybridVehicle
 
 from carconnectivity_connectors.volkswagen._version import __version__
 
@@ -104,6 +104,11 @@ class Connector(BaseConnector):
         else:
             raise AuthenticationError('connected_vehicle_token was not found in config')
 
+        if 'location_token' in config and config['location_token'] is not None:
+            self.active_config['location_token'] = config['location_token']
+        else:
+            self.active_config['location_token'] = None
+
         self.active_config['interval'] = 180
         if 'interval' in config:
             self.active_config['interval'] = config['interval']
@@ -124,6 +129,19 @@ class Connector(BaseConnector):
         self.connected_vehicle_session: VolvoSession = connected_vehicle_session
         self.connected_vehicle_session.retries = 3
         self.connected_vehicle_session.timeout = 180
+
+        if self.active_config['location_token'] is not None:
+            location_session: requests.Session = self._manager.get_session(Service.VOLVO_LOCATION, SessionToken(
+                    vcc_api_key_primary=self.active_config['vcc_api_key_primary'],
+                    vcc_api_key_secondary=self.active_config['vcc_api_key_secondary'],
+                    access_token=self.active_config['location_token']))
+            if not isinstance(connected_vehicle_session, VolvoSession):
+                raise AuthenticationError('Could not create session')
+            self.location_session: Optional[VolvoSession] = location_session
+            self.location_session.retries = 3
+            self.location_session.timeout = 180
+        else:
+            self.location_session = None
 
         self._elapsed: List[timedelta] = []
 
@@ -240,7 +258,11 @@ class Connector(BaseConnector):
         for vin in set(garage.list_vehicle_vins()):
             vehicle_to_update: Optional[GenericVehicle] = garage.get_vehicle(vin)
             if vehicle_to_update is not None and isinstance(vehicle_to_update, GenericVehicle) and vehicle_to_update.is_managed_by_connector(self):
-                #self.fetch_vehicle_status(vehicle_to_update)
+                vehicle_to_update = self.fetch_odometer(vehicle_to_update)
+                vehicle_to_update = self.fetch_windows(vehicle_to_update)
+                vehicle_to_update = self.fetch_doors(vehicle_to_update)
+                if self.location_session is not None:
+                    vehicle_to_update = self.fetch_position(vehicle_to_update)
                 self.decide_state(vehicle_to_update)
 
     def fetch_vehicles(self) -> None:
@@ -277,6 +299,43 @@ class Connector(BaseConnector):
                             if 'modelYear' in vehicle_data['data'] and vehicle_data['data']['modelYear'] is not None:
                                 vehicle.model_year._set_value(vehicle_data['data']['modelYear'])  # pylint: disable=protected-access
 
+                            if 'gearbox' in vehicle_data['data'] and vehicle_data['data']['gearbox'] is not None:
+                                if vehicle_data['data']['gearbox'] in [item.name for item in GenericVehicle.VehicleSpecification.GearboxType]:
+                                    gearbox_type: GenericVehicle.VehicleSpecification.GearboxType = \
+                                        GenericVehicle.VehicleSpecification.GearboxType[vehicle_data['data']['gearbox']]
+                                    vehicle.specification.gearbox._set_value(gearbox_type)  # pylint: disable=protected-access
+                                else:
+                                    vehicle.specification.gearbox._set_value(GenericVehicle.VehicleSpecification.GearboxType.UNKNOWN)  # pylint: disable=protected-access
+                                    LOG_API.warning('Unknown gearbox type: %s', vehicle_data['data']['gearbox'])
+                            
+                            if 'fuelType' in vehicle_data['data'] and vehicle_data['data']['fuelType'] is not None:
+                                if vehicle_data['data']['fuelType'] in [item.name for item in GenericVehicle.Type]:
+                                    car_type: GenericVehicle.Type = GenericVehicle.Type[vehicle_data['data']['fuelType']]
+                                    vehicle.type._set_value(car_type)  # pylint: disable=protected-access
+                                elif vehicle_data['data']['fuelType'] == 'PETROL/ELECTRIC':
+                                    vehicle.type._set_value(GenericVehicle.Type.HYBRID)  # pylint: disable=protected-access
+                                else:
+                                    vehicle.type._set_value(GenericVehicle.Type.UNKNOWN)  # pylint: disable=protected-access
+                                    LOG_API.warning('Unknown fuel type: %s', vehicle_data['data']['fuelType'])
+                                if vehicle.type.value == GenericVehicle.Type.ELECTRIC and not isinstance(vehicle, VolvoElectricVehicle):
+                                    LOG.debug('Promoting %s to VolvoElectricVehicle object for %s', vehicle.__class__.__name__, vin)
+                                    vehicle = VolvoElectricVehicle(garage=self.car_connectivity.garage, origin=vehicle)
+                                    self.car_connectivity.garage.replace_vehicle(vin, vehicle)
+                                elif vehicle.type.value in [GenericVehicle.Type.FUEL,
+                                                GenericVehicle.Type.GASOLINE,
+                                                GenericVehicle.Type.PETROL,
+                                                GenericVehicle.Type.DIESEL,
+                                                GenericVehicle.Type.CNG,
+                                                GenericVehicle.Type.LPG] \
+                                        and not isinstance(vehicle, VolvoCombustionVehicle):
+                                    LOG.debug('Promoting %s to VolvoCombustionVehicle object for %s', vehicle.__class__.__name__, vin)
+                                    vehicle = VolvoCombustionVehicle(garage=self.car_connectivity.garage, origin=vehicle)
+                                    self.car_connectivity.garage.replace_vehicle(vin, vehicle)
+                                elif vehicle.type.value == GenericVehicle.Type.HYBRID and not isinstance(vehicle, VolvoHybridVehicle):
+                                    LOG.debug('Promoting %s to VolvoHybridVehicle object for %s', vehicle.__class__.__name__, vin)
+                                    vehicle = VolvoHybridVehicle(garage=self.car_connectivity.garage, origin=vehicle)
+                                    self.car_connectivity.garage.replace_vehicle(vin, vehicle)
+                            
                             if 'descriptions' in vehicle_data['data'] and vehicle_data['data']['descriptions'] is not None:
                                 if 'model' in vehicle_data['data']['descriptions'] and vehicle_data['data']['descriptions']['model'] is not None:
                                     vehicle.model._set_value(vehicle_data['data']['descriptions']['model'])  # pylint: disable=protected-access
@@ -338,7 +397,7 @@ class Connector(BaseConnector):
                                                 vehicle.images.images['car_picture'] = ImageAttribute(name="car_picture", parent=vehicle.images,
                                                                                                       value=img, tags={'carconnectivity'})
                             log_extra_keys(LOG_API, 'https://api.volvocars.com/connected-vehicle/v2/vehicles/{vin}', vehicle_data['data'],
-                                           {'vin', 'modelYear', 'descriptions', 'images'})
+                                           {'vin', 'modelYear', 'gearbox', 'descriptions', 'images'})
                     else:
                         raise APIError('Could not fetch vehicle data, VIN missing')
         for vin in set(garage.list_vehicle_vins()) - seen_vehicle_vins:
@@ -347,16 +406,17 @@ class Connector(BaseConnector):
                 garage.remove_vehicle(vin)
         self.update_vehicles()
 
-    def decide_state(self, vehicle: GenericVehicle) -> None:
+    def decide_state(self, vehicle: GenericVehicle) -> GenericVehicle:
         """
         Decides the state of the vehicle based on the current data.
 
         Args:
             vehicle (GenericVehicle): The volvo vehicle object.
         """
+        return vehicle
 
 
-    def fetch_position(self, vehicle: GenericVehicle) -> None:
+    def fetch_position(self, vehicle: GenericVehicle) -> GenericVehicle:
         """
         Fetches the parking position of the given volvo vehicle and updates the vehicle's position attributes.
 
@@ -374,25 +434,140 @@ class Connector(BaseConnector):
         vin = vehicle.vin.value
         if vin is None:
             raise ValueError('vehicle.vin cannot be None')
-        url: str = f'https://emea.bff.cariad.digital/vehicle/v1/vehicles/{vin}/parkingposition'
-        data: Dict[str, Any] | None = self._fetch_data(url, self.session, allow_empty=True)
+        url: str = f'https://api.volvocars.com/location/v1/vehicles/{vin}/location'
+        data: Dict[str, Any] | None = self._fetch_data(url, self.location_session, allow_empty=True)
         if data is not None and 'data' in data and data['data'] is not None:
-            if 'carCapturedTimestamp' not in data['data'] or data['data']['carCapturedTimestamp'] is None:
-                raise APIError('Could not fetch vehicle status, carCapturedTimestamp missing')
-            captured_at: datetime = robust_time_parse(data['data']['carCapturedTimestamp'])
-
-            if 'lat' in data['data'] and data['data']['lat'] is not None and 'lon' in data['data'] and data['data']['lon'] is not None:
-                vehicle.position.latitude._set_value(data['data']['lat'], measured=captured_at)  # pylint: disable=protected-access
-                vehicle.position.longitude._set_value(data['data']['lon'], measured=captured_at)  # pylint: disable=protected-access
-                vehicle.position.position_type._set_value(Position.PositionType.PARKING, measured=captured_at)  # pylint: disable=protected-access
-            else:
-                vehicle.position.latitude._set_value(None)  # pylint: disable=protected-access
-                vehicle.position.longitude._set_value(None)  # pylint: disable=protected-access
-                vehicle.position.position_type._set_value(None)  # pylint: disable=protected-access
+            if 'type' in data['data'] and data['data']['type'] == 'Feature':
+                if 'properties' in data['data'] and data['data']['properties'] is not None:
+                    if 'heading' in data['data']['properties'] and data['data']['properties']['heading'] is not None:
+                        vehicle.position.heading._set_value(data['data']['properties']['heading'])  # pylint: disable=protected-access
+                    else:
+                        vehicle.position.heading._set_value(None)  # pylint: disable=protected-access
+                    if 'timestamp' in data['data']['properties'] and data['data']['properties']['timestamp'] is not None:
+                        captured_at: datetime = robust_time_parse(data['data']['properties']['timestamp'])
+                    else:
+                        raise APIError('Could not fetch position, timestamp missing')
+                    if 'geometry' in data['data'] and data['data']['geometry'] is not None and data['data']['geometry']['type'] == 'Point':
+                        if 'coordinates' in data['data']['geometry'] and data['data']['geometry']['coordinates'] is not None:
+                            vehicle.position.latitude._set_value(data['data']['geometry']['coordinates'][1], measured=captured_at)  # pylint: disable=protected-access
+                            vehicle.position.longitude._set_value(data['data']['geometry']['coordinates'][0], measured=captured_at)  # pylint: disable=protected-access
+                            vehicle.position.altitude._set_value(data['data']['geometry']['coordinates'][2], measured=captured_at)  # pylint: disable=protected-access
+                            vehicle.position.position_type._set_value(Position.PositionType.PARKING, measured=captured_at)  # pylint: disable=protected-access
+                    else:
+                        vehicle.position.latitude._set_value(None)  # pylint: disable=protected-access
+                        vehicle.position.longitude._set_value(None)  # pylint: disable=protected-access
+                        vehicle.position.altitude._set_value(None)  # pylint: disable=protected-access
+                        vehicle.position.position_type._set_value(None)  # pylint: disable=protected-access
         else:
             vehicle.position.latitude._set_value(None)  # pylint: disable=protected-access
             vehicle.position.longitude._set_value(None)  # pylint: disable=protected-access
+            vehicle.position.altitude._set_value(None)  # pylint: disable=protected-access
             vehicle.position.position_type._set_value(None)  # pylint: disable=protected-access
+        return vehicle
+
+    def fetch_windows(self, vehicle: GenericVehicle) -> GenericVehicle:
+        vin = vehicle.vin.value
+        if vin is None:
+            raise ValueError('vehicle.vin cannot be None')
+        url: str = f'https://api.volvocars.com/connected-vehicle/v2/vehicles/{vin}/windows'
+        data: Dict[str, Any] | None = self._fetch_data(url, self.connected_vehicle_session, allow_empty=True)
+        seen_window_ids: set[str] = set()
+        if data is not None and 'data' in data and data['data'] is not None:
+            for window_id, window_dict in data['data'].items():
+                window_id = window_id.replace('Window', '')
+                seen_window_ids.add(window_id)
+                if window_id in vehicle.windows.windows:
+                    window: Windows.Window = vehicle.windows.windows[window_id]
+                else:
+                    window = Windows.Window(window_id=window_id, windows=vehicle.windows)
+                    vehicle.windows.windows[window_id] = window
+                if 'timestamp' in window_dict and window_dict['timestamp'] is not None:
+                    captured_at: datetime = robust_time_parse(window_dict['timestamp'])
+                else:
+                    raise APIError('Could not fetch window, timestamp missing')
+                if 'value' in window_dict and window_dict['value'] is not None:
+                    if window_dict['value'] in [item.name for item in Windows.OpenState]:
+                        window.open_state._set_value(Windows.OpenState[window_dict['value']], measured=captured_at)  # pylint: disable=protected-access
+                    else:
+                        window.open_state._set_value(Windows.OpenState.UNKNOWN, measured=captured_at)  # pylint: disable=protected-access
+                        LOG_API.warning('Unknown window state: %s', window_dict['value'])
+                else:
+                    window.open_state._set_value(None)  # pylint: disable=protected-access
+        for window_id in vehicle.windows.windows.keys() - seen_window_ids:
+            vehicle.windows.windows[window_id].enabled = False
+        return vehicle
+
+    def fetch_doors(self, vehicle: GenericVehicle) -> GenericVehicle:
+        vin = vehicle.vin.value
+        if vin is None:
+            raise ValueError('vehicle.vin cannot be None')
+        url: str = f'https://api.volvocars.com/connected-vehicle/v2/vehicles/{vin}/doors'
+        data: Dict[str, Any] | None = self._fetch_data(url, self.connected_vehicle_session, allow_empty=True)
+        seen_door_ids: set[str] = set()
+        if data is not None and 'data' in data and data['data'] is not None:
+            any_door_open: bool = False
+            for door_id, door_dict in data['data'].items():
+                door_id = door_id.replace('Door', '')
+                if door_id == 'centralLock':
+                    if 'value' in door_dict and door_dict['value'] is not None:
+                        if door_dict['value'] == "LOCKED":
+                            vehicle.doors.lock_state._set_value(Doors.LockState.LOCKED)  # pylint: disable=protected-access
+                        elif door_dict['value'] == "UNLOCKED":
+                            vehicle.doors.lock_state._set_value(Doors.LockState.UNLOCKED)  # pylint: disable=protected-access
+                        else:
+                            vehicle.doors.lock_state._set_value(Doors.LockState.UNKNOWN)  # pylint: disable=protected-access
+                else:
+                    seen_door_ids.add(door_id)
+                    if door_id in vehicle.doors.doors:
+                        door: Doors.Door = vehicle.doors.doors[door_id]
+                    else:
+                        door = Doors.Door(door_id=door_id, doors=vehicle.doors)
+                        vehicle.doors.doors[door_id] = door
+                    if 'timestamp' in door_dict and door_dict['timestamp'] is not None:
+                        captured_at: datetime = robust_time_parse(door_dict['timestamp'])
+                    else:
+                        raise APIError('Could not fetch door, timestamp missing')
+                    if 'value' in door_dict and door_dict['value'] is not None:
+                        if door_dict['value'] == "UNSPECIFIED":
+                            door.open_state._set_value(Doors.OpenState.UNKNOWN, measured=captured_at)  # pylint: disable=protected-access
+                        elif door_dict['value'] in [item.name for item in Doors.OpenState]:
+                            door.open_state._set_value(Doors.OpenState[door_dict['value']], measured=captured_at)  # pylint: disable=protected-access
+                        else:
+                            door.open_state._set_value(Windows.OpenState.UNKNOWN, measured=captured_at)  # pylint: disable=protected-access
+                            LOG_API.warning('Unknown door state: %s', door_dict['value'])
+                        if door.open_state.value in [Doors.OpenState.OPEN, Doors.OpenState.AJAR]:
+                            any_door_open = True
+                    else:
+                        door.open_state._set_value(None)  # pylint: disable=protected-access
+                    door.lock_state._set_value(vehicle.doors.lock_state.value)  # pylint: disable=protected-access
+            if any_door_open:
+                vehicle.doors.open_state._set_value(Doors.OpenState.OPEN)  # pylint: disable=protected-access
+            else:
+                vehicle.doors.open_state._set_value(Doors.OpenState.CLOSED)  # pylint: disable=protected-access
+        for door_id in vehicle.doors.doors.keys() - seen_door_ids:
+            vehicle.doors.doors[door_id].enabled = False
+        return vehicle
+
+    def fetch_odometer(self, vehicle: GenericVehicle) -> GenericVehicle:
+        vin = vehicle.vin.value
+        if vin is None:
+            raise ValueError('vehicle.vin cannot be None')
+        url: str = f'https://api.volvocars.com/connected-vehicle/v2/vehicles/{vin}/odometer'
+        data: Dict[str, Any] | None = self._fetch_data(url, self.connected_vehicle_session, allow_empty=True)
+        if data is not None and 'data' in data and data['data'] is not None:
+            if 'odometer' in data['data'] and data['data']['odometer'] is not None:
+                if 'timestamp' in data['data']['odometer'] and data['data']['odometer']['timestamp'] is not None:
+                    captured_at: datetime = robust_time_parse(data['data']['odometer']['timestamp'])
+                else:
+                    raise APIError('Could not fetch odometer, timestamp missing')
+                if 'unit' in data['data']['odometer'] and data['data']['odometer']['unit'] is not None and data['data']['odometer']['unit'] == 'km':
+                    unit = Length.KM
+                else:
+                    unit = Length.KM
+                    LOG_API.warning('Unknown odometer unit: %s', data['data']['odometer']['unit'])
+                if 'value' in data['data']['odometer'] and data['data']['odometer']['value'] is not None:
+                    vehicle.odometer._set_value(data['data']['odometer']['value'], measured=captured_at, unit=unit)  # pylint: disable=protected-access
+        return vehicle
 
     def _record_elapsed(self, elapsed: timedelta) -> None:
         """
