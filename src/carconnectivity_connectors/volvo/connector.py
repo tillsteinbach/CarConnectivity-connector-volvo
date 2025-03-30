@@ -284,6 +284,9 @@ class Connector(BaseConnector):
             if 'data' in data and data['data'] is not None:
                 for vehicle_dict in data['data']:
                     if 'vin' in vehicle_dict and vehicle_dict['vin'] is not None:
+                        if vehicle_dict['vin'] in self.active_config['hide_vins']:
+                            LOG.warning('Vehicle %s is hidden in config', vehicle_dict['vin'])
+                            continue
                         vin: str = vehicle_dict['vin']
                         seen_vehicle_vins.add(vin)
                         vehicle: Optional[GenericVehicle] = garage.get_vehicle(vin)  # pyright: ignore[reportAssignmentType]
