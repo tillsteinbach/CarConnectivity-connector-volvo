@@ -28,14 +28,14 @@ class VolvoVehicle(GenericVehicle):  # pylint: disable=too-many-instance-attribu
         The vehicle identification number (VIN) of the vehicle.
     """
     def __init__(self, vin: Optional[str] = None, garage: Optional[Garage] = None, managing_connector: Optional[BaseConnector] = None,
-                 origin: Optional[VolvoVehicle] = None) -> None:
+                 origin: Optional[VolvoVehicle] = None, initialization: Optional[Dict] = None) -> None:
         if origin is not None:
-            super().__init__(garage=garage, origin=origin)
+            super().__init__(garage=garage, origin=origin, initialization=initialization)
             if SUPPORT_IMAGES:
                 self._car_images = origin._car_images
         else:
-            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector)
-            self.is_active = BooleanAttribute(name='is_active', parent=self, tags={'connector_custom'})
+            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector, initialization=initialization)
+            self.is_active = BooleanAttribute(name='is_active', parent=self, tags={'connector_custom'}, initialization=self.get_initialization('is_active'))
             if SUPPORT_IMAGES:
                 self._car_images: Dict[str, Image.Image] = {}
         self.manufacturer._set_value(value='Volvo')  # pylint: disable=protected-access
@@ -46,11 +46,11 @@ class VolvoElectricVehicle(ElectricVehicle, VolvoVehicle):
     Represents a Volvo electric vehicle.
     """
     def __init__(self, vin: Optional[str] = None, garage: Optional[Garage] = None, managing_connector: Optional[BaseConnector] = None,
-                 origin: Optional[VolvoVehicle] = None) -> None:
+                 origin: Optional[VolvoVehicle] = None, initialization: Optional[Dict] = None) -> None:
         if origin is not None:
-            super().__init__(garage=garage, origin=origin)
+            super().__init__(garage=garage, origin=origin, initialization=initialization)
         else:
-            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector)
+            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector, initialization=initialization)
 
 
 class VolvoCombustionVehicle(CombustionVehicle, VolvoVehicle):
@@ -58,11 +58,11 @@ class VolvoCombustionVehicle(CombustionVehicle, VolvoVehicle):
     Represents a VolvoV combustion vehicle.
     """
     def __init__(self, vin: Optional[str] = None, garage: Optional[Garage] = None, managing_connector: Optional[BaseConnector] = None,
-                 origin: Optional[VolvoVehicle] = None) -> None:
+                 origin: Optional[VolvoVehicle] = None, initialization: Optional[Dict] = None) -> None:
         if origin is not None:
-            super().__init__(garage=garage, origin=origin)
+            super().__init__(garage=garage, origin=origin, initialization=initialization)
         else:
-            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector)
+            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector, initialization=initialization)
 
 
 class VolvoHybridVehicle(HybridVehicle, VolvoElectricVehicle, VolvoCombustionVehicle):
@@ -70,8 +70,8 @@ class VolvoHybridVehicle(HybridVehicle, VolvoElectricVehicle, VolvoCombustionVeh
     Represents a Volvo hybrid vehicle.
     """
     def __init__(self, vin: Optional[str] = None, garage: Optional[Garage] = None, managing_connector: Optional[BaseConnector] = None,
-                 origin: Optional[VolvoVehicle] = None) -> None:
+                 origin: Optional[VolvoVehicle] = None, initialization: Optional[Dict] = None) -> None:
         if origin is not None:
-            super().__init__(garage=garage, origin=origin)
+            super().__init__(garage=garage, origin=origin, initialization=initialization)
         else:
-            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector)
+            super().__init__(vin=vin, garage=garage, managing_connector=managing_connector, initialization=initialization)

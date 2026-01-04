@@ -73,8 +73,9 @@ class Connector(BaseConnector):
     Attributes:
         max_age (Optional[int]): Maximum age for cached data in seconds.
     """
-    def __init__(self, connector_id: str, car_connectivity: CarConnectivity, config: Dict) -> None:
-        BaseConnector.__init__(self, connector_id=connector_id, car_connectivity=car_connectivity, config=config, log=LOG, api_log=LOG_API)
+    def __init__(self, connector_id: str, car_connectivity: CarConnectivity, config: Dict, initialization: Optional[Dict] = None) -> None:
+        BaseConnector.__init__(self, connector_id=connector_id, car_connectivity=car_connectivity, config=config, log=LOG, api_log=LOG_API,
+                               initialization=initialization)
 
         self._background_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -291,7 +292,7 @@ class Connector(BaseConnector):
                         seen_vehicle_vins.add(vin)
                         vehicle: Optional[GenericVehicle] = garage.get_vehicle(vin)  # pyright: ignore[reportAssignmentType]
                         if vehicle is None:
-                            vehicle = VolvoVehicle(vin=vin, garage=garage, managing_connector=self)
+                            vehicle = VolvoVehicle(vin=vin, garage=garage, managing_connector=self, initialization=garage.get_initialization(vin))
                             garage.add_vehicle(vin, vehicle)
 
                         url = f'https://api.volvocars.com/connected-vehicle/v2/vehicles/{vin}'
@@ -482,7 +483,7 @@ class Connector(BaseConnector):
                 if window_id in vehicle.windows.windows:
                     window: Windows.Window = vehicle.windows.windows[window_id]
                 else:
-                    window = Windows.Window(window_id=window_id, windows=vehicle.windows)
+                    window = Windows.Window(window_id=window_id, windows=vehicle.windows, initialization=vehicle.windows.get_initialization(window_id))
                     vehicle.windows.windows[window_id] = window
                 if 'timestamp' in window_dict and window_dict['timestamp'] is not None:
                     captured_at: datetime = robust_time_parse(window_dict['timestamp'])
@@ -524,7 +525,7 @@ class Connector(BaseConnector):
                     if door_id in vehicle.doors.doors:
                         door: Doors.Door = vehicle.doors.doors[door_id]
                     else:
-                        door = Doors.Door(door_id=door_id, doors=vehicle.doors)
+                        door = Doors.Door(door_id=door_id, doors=vehicle.doors, initialization=vehicle.doors.get_initialization(door_id))
                         vehicle.doors.doors[door_id] = door
                     if 'timestamp' in door_dict and door_dict['timestamp'] is not None:
                         captured_at: datetime = robust_time_parse(door_dict['timestamp'])
